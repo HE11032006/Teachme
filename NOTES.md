@@ -35,7 +35,8 @@ Script : `test_llm.py`. A lancer : `python test_llm.py modele1 modele2`.
 
 | Modele | Prompt moy. (s) | Tokens/s | Mots moy. | Mots max |
 |---|---|---|---|---|
-|  |  |  |  |  |
+| qwen3:1.7b | 0.38 | 17.3 | 15 | 19 |
+| qwen2.5:0.5b | 0.13 | 49.2 | 13 | 20 |
 
 **Criteres**
 - Vitesse : au moins 8 a 10 tokens/s pour une conversation fluide.
