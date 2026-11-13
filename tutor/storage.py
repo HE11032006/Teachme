@@ -31,6 +31,17 @@ class Store:
             Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(str(path))
         self.db.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self):
+        """Ajoute les colonnes manquantes si la base existait deja avec l'ancien schema."""
+        cur = self.db.execute("PRAGMA table_info(turns)")
+        cols = {row[1] for row in cur.fetchall()}
+        if "raw_text" not in cols:
+            self.db.execute("ALTER TABLE turns ADD COLUMN raw_text TEXT")
+        if "was_repaired" not in cols:
+            self.db.execute("ALTER TABLE turns ADD COLUMN was_repaired INTEGER DEFAULT 0")
+        self.db.commit()
 
     def new_session(self, course_id):
         cur = self.db.execute(
