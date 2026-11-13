@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from .course import check_step, find_corrections, normalize
 from .llm import LLMError
 from .repair import repair_utterance
+from .validator import rule_based_check, validate_llm_output, EvaluationResult
+from .analyzer_prompt import build_analysis_prompt
 
 REACTION_SYSTEM = (
     "You are a kind English tutor for a {level} learner. "
@@ -90,7 +92,8 @@ class Tutor:
             self.history.append({"role": "assistant", "content": self.course.free_opening})
             return self._emit(self.course.free_opening, "", False, "free")
         step = self.course.steps[0]
-        return self._emit(step.opening, step.hint_fr, False, step.id)
+        # Interdiction §4.1 : Ne JAMAIS afficher la phrase cible avant l'essai de l'élève
+        return self._emit(step.opening, "", False, step.id)
 
     def reply(self, user_text):
         self.unclear = 0
@@ -125,34 +128,64 @@ class Tutor:
         step = self.course.steps[self.index]
         if is_inappropriate(user_text):
             self._log("student", user_text, step.id, raw_text=raw_text, was_repaired=was_repaired, passed=False)
-            text = f"Let's keep it friendly. Try again: {step.target or step.opening}"
-            return self._emit(text, step.hint_fr, False, step.id)
+            text = f"Let's keep it friendly. Try again: {step.opening}"
+            return self._emit(text, "", False, step.id)
 
-        ev = check_step(step, user_text)
-
-        # La personne s'est arretee en route (« I am. ») : on l'encourage a continuer,
-        # sans compter d'echec (deux fois au maximum par etape).
-        if ev.incomplete and self.incomplete_count < 2:
+        # Gestion des fragments et phrases coupees (ex: "I am.") avant verification lourde
+        ev_old = check_step(step, user_text)
+        if ev_old.incomplete and self.incomplete_count < 2:
             self.incomplete_count += 1
             self._log("student", user_text, step.id, raw_text=raw_text, was_repaired=was_repaired, passed=False)
             text = f"Keep going! You can say: {step.target}"
             return self._emit(text, step.hint_fr, False, step.id)
 
-        passed = ev.passed and not ev.incomplete
+        # 1. Évaluation hybride (Règles strictes A1 d'abord, puis check_step / LLM)
+        eval_res = rule_based_check(step.id, user_text)
+        if eval_res is None:
+            # Si le step_id est "city" au lieu de "location"
+            if step.id == "city":
+                eval_res = rule_based_check("location", user_text)
+
+        if eval_res is None:
+            if ev_old.passed:
+                eval_res = EvaluationResult(True, True, True, True, True, "none", None, None, 1.0, "rules")
+            elif ev_old.corrections:
+                eval_res = EvaluationResult(False, False, True, True, True, "grammar", ev_old.corrections[0], None, 1.0, "rules")
+            else:
+                prompt_msgs = build_analysis_prompt(step.opening, step.target, user_text)
+                try:
+                    raw_eval = self.llm.complete(prompt_msgs, max_tokens=120)
+                except LLMError:
+                    raw_eval = ""
+                eval_res = validate_llm_output(raw_eval, user_text)
+
+        passed = eval_res.passed
         self._log("student", user_text, step.id, raw_text=raw_text, was_repaired=was_repaired, passed=passed)
 
+        # 2. Gestion de l'échec selon le type d'erreur
         if not passed:
             self.attempts += 1
+            hint_fr = ""
+
+            if eval_res.error_type == "off_topic":
+                lead = "You didn't answer the question."
+                hint_fr = eval_res.explanation_fr or "Réponds à la question posée."
+                text = f"{lead} {step.opening}"
+                return self._emit(text, hint_fr, False, step.id)
+
             if self.attempts < step.max_attempts:
-                if ev.corrections:
-                    text = f"Almost! You can say: {ev.corrections[0]}."
+                correction = eval_res.corrected or (ev_old.corrections[0] if ev_old.corrections else None)
+                if correction:
+                    text = f"Almost! You can say: {correction}."
                 else:
                     text = f"Let's try again. You can say: {step.target}"
                 return self._emit(text, step.hint_fr, False, step.id)
+
             model = step.example or step.target
             lead = f"No problem. A good answer is: {model}" if model else "No problem."
         else:
-            lead = self._reaction(user_text, ev.corrections, was_repaired)
+            corrections = [eval_res.corrected] if (eval_res.corrected and eval_res.error_type != "none") else ev_old.corrections
+            lead = self._reaction(user_text, corrections, was_repaired)
 
         self.index += 1
         self.attempts = 0
@@ -161,7 +194,7 @@ class Tutor:
             self.close()
             return self._emit(f"{lead} {self.course.closing}", "", True, step.id)
         nxt = self.course.steps[self.index]
-        return self._emit(f"{lead} {nxt.opening}", nxt.hint_fr, False, nxt.id)
+        return self._emit(f"{lead} {nxt.opening}", "", False, nxt.id)
 
     def _canned_reaction(self, corrections, was_repaired=False):
         if was_repaired:
