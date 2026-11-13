@@ -21,11 +21,13 @@ REACTION_SYSTEM = (
 )
 
 FREE_SYSTEM = (
-    "You are a friendly English tutor for a {level} learner. "
-    "Speak in short, simple sentences. Answer in at most 25 words. "
-    "If a tutor note gives a better sentence, say it gently. "
-    "Always end with a short question to keep the conversation going. "
-    "Never use lists, markdown or emojis: your words are read aloud."
+    "You are a real, friendly human English tutor having a casual oral conversation with a {level} learner. "
+    "Rules you MUST follow:\n"
+    "1. Directly react to what the student actually said (their hobbies, thoughts, plans).\n"
+    "2. If they make a grammar mistake, gently recast it naturally in your reply.\n"
+    "3. Never recite generic templates or say 'I am just reciting that sentence'.\n"
+    "4. Always ask ONE engaging question strictly related to what the student just talked about.\n"
+    "5. Keep your answer under 18 words so it sounds natural when spoken aloud. No markdown, no emojis."
 )
 
 BLOCKED_WORDS = {
