@@ -17,7 +17,8 @@ from tutor.session import Tutor
 from tutor.storage import Store
 
 # Phrases que Whisper "invente" parfois sur du silence ou du bruit
-HALLUCINATIONS = {"you", "thank you", "thanks for watching", "bye"}
+HALLUCINATIONS = {"you", "thank you", "thanks for watching", "thank you for watching",
+                  "bye", "the end"}
 
 
 def show(reply):
@@ -45,37 +46,55 @@ def run_text(tutor):
 
 
 def run_voice(tutor, cfg):
-    from tutor.audio import record_utterance
+    from tutor.audio import calibrate_noise, record_utterance
     from tutor.stt import WhisperSTT
     from tutor.tts import make_tts
 
     print("Chargement de Whisper...")
-    stt = WhisperSTT(cfg.whisper_model)
-    tts = make_tts(cfg.speech_rate)
+    stt = WhisperSTT(cfg.whisper_model, cpu_threads=cfg.whisper_threads)
+    tts = make_tts(cfg)
+
+    print("Calibrage du micro : reste silencieux 1 seconde...")
+    ambient = calibrate_noise(cfg.sample_rate, 1.0)
+    threshold = max(cfg.energy_threshold, ambient * 3)
+    print(f"Bruit ambiant : {ambient:.4f} | seuil de detection : {threshold:.4f}")
 
     reply = tutor.start()
     show(reply)
     tts.speak(reply.text)
     while not reply.finished:
         print("\n(Parle... Ctrl+C pour arreter)")
-        audio = record_utterance(cfg.sample_rate, cfg.energy_threshold,
-                                 cfg.silence_seconds, cfg.max_record_seconds)
+        time.sleep(0.3)  # laisse retomber l'echo de la voix avant d'ecouter
+        audio = record_utterance(cfg.sample_rate, threshold,
+                                 cfg.silence_seconds, cfg.hesitation_silence_seconds,
+                                 cfg.max_record_seconds)
         if audio is None:
             print("(Je n'ai rien entendu)")
             continue
+
         t0 = time.time()
-        text = stt.transcribe(audio)
+        heard = stt.transcribe(audio)
         t_stt = time.time() - t0
-        if not text or text.lower().strip(" .!?") in HALLUCINATIONS:
-            print("(Pas compris, repete s'il te plait)")
+        text = heard.text
+        stats = f"stt {t_stt:.1f} s | confiance {heard.logprob:.2f} | non-parole {heard.no_speech:.2f}"
+
+        unsure = (not text
+                  or text.lower().strip(" .!?") in HALLUCINATIONS
+                  or not heard.confident(cfg.min_logprob, cfg.max_no_speech))
+        if unsure:
+            print(f"(entendu : {text!r})  [{stats}]")
+            reply = tutor.not_understood()
+            show(reply)
+            tts.speak(reply.text)
             continue
+
         print(f"Toi (compris) : {text}")
         t0 = time.time()
         reply = tutor.reply(text)
         t_llm = time.time() - t0
         show(reply)
+        print(f"  [{stats} | llm {t_llm:.1f} s]")
         tts.speak(reply.text)
-        print(f"  [stt {t_stt:.1f} s | llm {t_llm:.1f} s]")
 
 
 def main():
@@ -84,11 +103,19 @@ def main():
     parser.add_argument("--text", action="store_true", help="mode clavier (sans micro ni voix)")
     parser.add_argument("--model", default=None, help="modele Ollama (defaut : qwen3:1.7b)")
     parser.add_argument("--level", default=None, help="niveau force : A1, A2, B1...")
+    parser.add_argument("--llm-reactions", action="store_true",
+                        help="le LLM commente chaque reponse du parcours guide (plus lent)")
+    parser.add_argument("--tts", choices=["auto", "piper", "pyttsx3"], default=None,
+                        help="moteur de voix (defaut : auto = Piper puis voix Windows)")
     args = parser.parse_args()
 
     cfg = Config()
     if args.model:
         cfg.llm_model = args.model
+    if args.llm_reactions:
+        cfg.llm_reactions = True
+    if args.tts:
+        cfg.tts_engine = args.tts
 
     course = load_course(cfg.courses_dir / f"{args.course}.json")
     if args.level:
@@ -97,6 +124,9 @@ def main():
     llm = OllamaLLM(cfg.llm_model, cfg.ollama_url, cfg.temperature)
     if not llm.available():
         print("ATTENTION : Ollama est injoignable. Le prof utilisera des phrases de secours.")
+    elif course.mode == "free" or cfg.llm_reactions:
+        print("Chargement du modele...")
+        llm.warm_up()
 
     store = Store(cfg.db_path)
     tutor = Tutor(course, llm, cfg, store)
