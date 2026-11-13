@@ -1,0 +1,57 @@
+{
+  "id": "se_presenter",
+  "title": "Se presenter",
+  "level": "A1",
+  "mode": "guided",
+  "closing": "Great job! You can introduce yourself in English now. See you next time!",
+  "steps": [
+    {
+      "id": "name",
+      "opening": "Hello! What is your name?",
+      "target": "My name is ...",
+      "pass_any": ["\\bmy name is\\b", "\\bi am \\w+", "\\bi'm \\w+", "\\bcall me\\b"],
+      "hint_fr": "Dis : My name is ... (Je m'appelle ...)",
+      "vocab": ["my name is", "nice to meet you"]
+    },
+    {
+      "id": "city",
+      "opening": "Nice to meet you! Where do you live?",
+      "target": "I live in ...",
+      "pass_any": ["\\bi live in\\b", "\\bi'm from\\b", "\\bi am from\\b"],
+      "hint_fr": "Dis : I live in ... (J'habite à ...)",
+      "vocab": ["i live in", "i am from"]
+    },
+    {
+      "id": "age",
+      "opening": "How old are you?",
+      "target": "I am ... years old",
+      "pass_any": ["\\byears? old\\b", "\\bi(?:'m| am) \\d+"],
+      "hint_fr": "Dis : I am ... years old (J'ai ... ans). Attention : on dit I am, pas I have.",
+      "vocab": ["i am", "years old"]
+    },
+    {
+      "id": "hobby",
+      "opening": "What do you like to do in your free time?",
+      "target": "I like ...",
+      "pass_any": ["\\bi (?:like|love|enjoy)\\b", "\\bmy hobb(?:y|ies)\\b"],
+      "hint_fr": "Dis : I like ... (J'aime ...)",
+      "vocab": ["i like", "i love", "free time"]
+    },
+    {
+      "id": "skill",
+      "opening": "What can you do well?",
+      "target": "I can ...",
+      "pass_any": ["\\bi can\\b", "\\bi work\\b", "\\bi(?:'m| am) an? \\w+", "\\bi (?:make|build|write|create)\\b"],
+      "hint_fr": "Dis : I can ... (Je sais ...) ou I work as ... (Je travaille comme ...)",
+      "vocab": ["i can", "i work as"]
+    },
+    {
+      "id": "education",
+      "opening": "What do you study?",
+      "target": "I study ...",
+      "pass_any": ["\\bi study\\b", "\\bi studied\\b", "\\bi(?:'m| am) (?:a )?student\\b", "\\bi have an? (?:degree|bachelor|master)", "\\bi graduated\\b"],
+      "hint_fr": "Dis : I study ... (J'étudie ...) ou I have a degree in ... (J'ai un diplôme en ...)",
+      "vocab": ["i study", "degree", "student"]
+    }
+  ]
+}
