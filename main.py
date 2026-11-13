@@ -50,6 +50,11 @@ def run_text(tutor):
         show(reply)
         print(f"  [llm {time.time() - t0:.1f} s]")
 
+    # §4.6 : Bilan de fin de session (mode libre uniquement)
+    summary = tutor.session_summary()
+    if summary:
+        print(f"\nProf (bilan) : {summary}")
+
 
 def run_voice(tutor, cfg):
     from tutor.audio import calibrate_noise, record_utterance
@@ -116,11 +121,17 @@ def run_voice(tutor, cfg):
 
         print(f"Toi (compris) : {text}")
         t0 = time.time()
-        reply = tutor.reply(text)
+        reply = tutor.reply(text, word_confidences=heard.word_confidences, stt_confidence=heard.logprob)
         t_llm = time.time() - t0
         show(reply)
         print(f"  [{stats} | llm {t_llm:.1f} s]")
         tts.speak(reply.text)
+
+    # §4.6 : Bilan de fin de session (mode libre uniquement)
+    summary = tutor.session_summary()
+    if summary:
+        print(f"\nProf (bilan) : {summary}")
+        tts.speak(summary)
 
 
 def main():
