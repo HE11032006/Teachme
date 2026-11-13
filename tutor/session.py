@@ -92,13 +92,14 @@ class Tutor:
 
     def reply(self, user_text):
         self.unclear = 0
+        raw_text = user_text
         # Reparation automatique des hesitations et fausses reprises
         repaired = repair_utterance(user_text)
         cleaned_text = normalize(repaired.cleaned or user_text)
 
         if self.course.mode == "free":
-            return self._reply_free(cleaned_text, repaired.was_repaired)
-        return self._reply_guided(cleaned_text, repaired.was_repaired)
+            return self._reply_free(cleaned_text, raw_text, repaired.was_repaired)
+        return self._reply_guided(cleaned_text, raw_text, repaired.was_repaired)
 
     def not_understood(self):
         """Whisper n'est pas sur de ce qu'il a entendu : on redemande, sans compter d'echec."""
@@ -118,10 +119,10 @@ class Tutor:
 
     # --- Parcours guide -------------------------------------------------------
 
-    def _reply_guided(self, user_text, was_repaired=False):
+    def _reply_guided(self, user_text, raw_text="", was_repaired=False):
         step = self.course.steps[self.index]
         if is_inappropriate(user_text):
-            self._log("student", user_text, step.id, False)
+            self._log("student", user_text, step.id, raw_text=raw_text, was_repaired=was_repaired, passed=False)
             text = f"Let's keep it friendly. Try again: {step.target or step.opening}"
             return self._emit(text, step.hint_fr, False, step.id)
 
@@ -131,12 +132,12 @@ class Tutor:
         # sans compter d'echec (deux fois au maximum par etape).
         if ev.incomplete and self.incomplete_count < 2:
             self.incomplete_count += 1
-            self._log("student", user_text, step.id, False)
+            self._log("student", user_text, step.id, raw_text=raw_text, was_repaired=was_repaired, passed=False)
             text = f"Keep going! You can say: {step.target}"
             return self._emit(text, step.hint_fr, False, step.id)
 
         passed = ev.passed and not ev.incomplete
-        self._log("student", user_text, step.id, passed)
+        self._log("student", user_text, step.id, raw_text=raw_text, was_repaired=was_repaired, passed=passed)
 
         if not passed:
             self.attempts += 1
@@ -197,8 +198,8 @@ class Tutor:
 
     # --- Parcours libre -------------------------------------------------------
 
-    def _reply_free(self, user_text, was_repaired=False):
-        self._log("student", user_text, "free")
+    def _reply_free(self, user_text, raw_text="", was_repaired=False):
+        self._log("student", user_text, "free", raw_text=raw_text, was_repaired=was_repaired)
         if is_inappropriate(user_text):
             text = "Let's talk about something else. What is your favorite food?"
             return self._emit(text, "", False, "free")
@@ -231,6 +232,6 @@ class Tutor:
         self._log("tutor", text, step_id)
         return TutorReply(text, hint_fr, finished, step_id)
 
-    def _log(self, role, text, step_id, passed=None):
+    def _log(self, role, text, step_id, raw_text=None, was_repaired=False, passed=None):
         if self.store:
-            self.store.log_turn(self.session_id, step_id, role, text, passed)
+            self.store.log_turn(self.session_id, step_id, role, text, raw_text, was_repaired, passed)

@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS turns (
     step_id TEXT,
     role TEXT NOT NULL,
     text TEXT NOT NULL,
+    raw_text TEXT,
+    was_repaired INTEGER DEFAULT 0,
     passed INTEGER,
     ts REAL NOT NULL
 );
@@ -38,10 +40,20 @@ class Store:
         self.db.commit()
         return cur.lastrowid
 
-    def log_turn(self, session_id, step_id, role, text, passed=None):
+    def log_turn(self, session_id, step_id, role, text, raw_text=None, was_repaired=False, passed=None):
         self.db.execute(
-            "INSERT INTO turns (session_id, step_id, role, text, passed, ts) VALUES (?, ?, ?, ?, ?, ?)",
-            (session_id, step_id, role, text, None if passed is None else int(passed), time.time()),
+            """INSERT INTO turns (session_id, step_id, role, text, raw_text, was_repaired, passed, ts)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                session_id,
+                step_id,
+                role,
+                text,
+                raw_text or text,
+                int(was_repaired),
+                None if passed is None else int(passed),
+                time.time(),
+            ),
         )
         self.db.commit()
 
@@ -54,10 +66,32 @@ class Store:
 
     def turns(self, session_id):
         cur = self.db.execute(
-            "SELECT step_id, role, text, passed FROM turns WHERE session_id = ? ORDER BY id",
+            """SELECT step_id, role, text, raw_text, was_repaired, passed
+               FROM turns WHERE session_id = ? ORDER BY id""",
             (session_id,),
         )
         return cur.fetchall()
+
+    def export_training_samples(self):
+        """Exporte les tours 'student' et 'tutor' ordonnes sous forme de paires pour fine-tuning."""
+        cur = self.db.execute(
+            """SELECT session_id, role, text, raw_text, was_repaired, step_id
+               FROM turns ORDER BY session_id, id"""
+        )
+        rows = cur.fetchall()
+        samples = []
+        for i in range(len(rows) - 1):
+            s_sess, s_role, s_text, s_raw, s_repaired, s_step = rows[i]
+            t_sess, t_role, t_text, _t_raw, _t_rep, _t_step = rows[i + 1]
+            if s_sess == t_sess and s_role == "student" and t_role == "tutor":
+                samples.append({
+                    "raw_input": s_raw,
+                    "cleaned_input": s_text,
+                    "was_repaired": bool(s_repaired),
+                    "tutor_response": t_text,
+                    "step_id": s_step,
+                })
+        return samples
 
     def close(self):
         self.db.close()
