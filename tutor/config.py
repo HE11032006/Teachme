@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parent.parent
 @dataclass
 class Config:
     # LLM (Ollama)
-    llm_model: str = "qwen3:1.7b"
+    llm_model: str = "tutor-1.5b"  # Notre modèle fine-tuné par défaut !
     ollama_url: str = "http://localhost:11434/api/chat"
     temperature: float = 0.7
     max_reaction_tokens: int = 40
