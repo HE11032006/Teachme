@@ -26,8 +26,8 @@ class Config:
     # Micro (detection adaptative de parole et de fin de phrase)
     sample_rate: int = 16000
     energy_threshold: float = 0.01
-    silence_seconds: float = 0.8  # Seuil de coupure réactif (800ms au lieu de 1.6s)
-    hesitation_silence_seconds: float = 1.4  # Tolérance allongée si la phrase vient juste de démarrer
+    silence_seconds: float = 1.0  # Seuil de coupure réactif quand la phrase est finie
+    hesitation_silence_seconds: float = 2.2  # Tolérance large (2.2s) pour laisser l'élève réfléchir sans être coupé
     max_record_seconds: float = 15.0
 
     # Voix : "auto" essaie Piper puis la voix Windows ; "piper" ou "pyttsx3" pour forcer

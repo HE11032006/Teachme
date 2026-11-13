@@ -52,9 +52,6 @@ class Pyttsx3TTS:
 
 
 class PiperTTS:
-    # Selon la version de Piper, l'option de sortie s'ecrit differemment.
-    OUTPUT_FLAGS = ["--output_file", "--output-file", "-f"]
-
     def __init__(self, voice="en_US-lessac-medium", voices_dir="voices"):
         self.voice = voice
         self.voices_dir = Path(voices_dir).resolve()
@@ -62,53 +59,32 @@ class PiperTTS:
         self.cache_dir = self.voices_dir / "cache"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-        # Telechargement automatique du modele ONNX et du JSON de la voix si absent
         onnx_file = self.voices_dir / f"{self.voice}.onnx"
         if not onnx_file.exists():
             print(f"Telechargement de la voix Piper ONNX ({self.voice})...")
             from piper.download_voices import download_voice
             download_voice(self.voice, self.voices_dir)
 
-        exe = shutil.which("piper")
-        self.base_cmd = [exe] if exe else [sys.executable, "-m", "piper"]
-        self.model_path = str(onnx_file) if onnx_file.exists() else self.voice
-        self.flag = None
-        self._synthesize("Hello.", self.cache_dir / "_check.wav")
-
-    def _synthesize(self, text, wav_path):
-        flags = [self.flag] if self.flag else self.OUTPUT_FLAGS
-        last_error = ""
-        for flag in flags:
-            cmd = self.base_cmd + ["--model", self.model_path, flag, str(wav_path)]
-            try:
-                result = subprocess.run(
-                    cmd, input=text.encode("utf-8"), capture_output=True,
-                    cwd=str(self.voices_dir), timeout=300,
-                )
-            except (OSError, subprocess.TimeoutExpired) as e:
-                raise RuntimeError(f"Piper n'a pas pu etre lance : {e}") from e
-            if result.returncode == 0 and Path(wav_path).exists():
-                self.flag = flag
-                return
-            last_error = result.stderr.decode("utf-8", errors="replace")[-300:]
-        raise RuntimeError(f"Piper a echoue : {last_error.strip() or 'erreur inconnue'}")
+        # Chargement direct du modele en memoire (latence < 200 ms au lieu de 1.5s en sous-processus)
+        from piper import PiperVoice
+        self.piper_voice = PiperVoice.load(str(onnx_file))
 
     def speak(self, text):
+        import numpy as np
         import sounddevice as sd
-        import soundfile as sf
 
-        key = hashlib.sha1(f"{self.voice}|{text}".encode("utf-8")).hexdigest()
-        wav = self.cache_dir / f"{key}.wav"   # cache : une phrase deja dite repart instantanement
-        if not wav.exists():
-            tmp = Path(tempfile.gettempdir()) / f"piper_{os.getpid()}_{key}.wav"
-            try:
-                self._synthesize(text, tmp)
-                shutil.move(str(tmp), str(wav))
-            finally:
-                if tmp.exists():
-                    tmp.unlink()
-        data, rate = sf.read(str(wav), dtype="float32")
-        sd.play(data, rate)
+        # Synthese directe en memoire vive (< 200 ms)
+        audio_chunks = list(self.piper_voice.synthesize(text))
+        if not audio_chunks:
+            return
+        
+        sample_rate = audio_chunks[0].sample_rate
+        audio_arrays = [chunk.audio_float_array for chunk in audio_chunks if chunk.audio_float_array is not None]
+        if not audio_arrays:
+            return
+        full_audio = np.concatenate(audio_arrays)
+
+        sd.play(full_audio, sample_rate)
         sd.wait()
 
 
