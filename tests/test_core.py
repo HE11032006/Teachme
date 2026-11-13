@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT))
 from tutor.config import Config
 from tutor.course import check_step, find_corrections, load_course
 from tutor.llm import LLMError
-from tutor.session import Tutor, drop_questions, shorten
+from tutor.session import Tutor, clean_text, drop_questions, shorten
 from tutor.storage import Store
 
 COURSES = ROOT / "courses"
@@ -85,7 +85,7 @@ class GuidedCourseTest(unittest.TestCase):
     def test_full_course(self):
         store = Store(":memory:")
         llm = FakeLLM("Very good.")
-        tutor = Tutor(self.course, llm, Config(), store)
+        tutor = Tutor(self.course, llm, Config(llm_reactions=True), store)
         reply = tutor.start()
         self.assertEqual(reply.step_id, "name")
         self.assertIn("name", reply.text.lower())
@@ -97,7 +97,7 @@ class GuidedCourseTest(unittest.TestCase):
             if i < len(answers) - 1:
                 self.assertFalse(reply.finished)
         self.assertTrue(reply.finished)
-        self.assertIn("Great job", reply.text)
+        self.assertIn("introduce yourself", reply.text)
         self.assertEqual(len(llm.calls), 6)
         self.assertGreater(len(store.turns(tutor.session_id)), 12)
 
@@ -122,18 +122,137 @@ class GuidedCourseTest(unittest.TestCase):
         self.assertIn("I am 24 years old", reply.text)
 
     def test_llm_down_uses_fallback(self):
-        tutor = Tutor(self.course, BrokenLLM(), Config())
+        tutor = Tutor(self.course, BrokenLLM(), Config(llm_reactions=True))
         tutor.start()
         reply = tutor.reply("My name is Euloge")
         self.assertTrue(reply.text.startswith("Good!"))
         self.assertIn("Where do you live", reply.text)
 
     def test_questions_in_reaction_are_dropped(self):
-        tutor = Tutor(self.course, FakeLLM("Nice! Do you like it?"), Config())
+        tutor = Tutor(self.course, FakeLLM("Nice! Do you like it?"), Config(llm_reactions=True))
         tutor.start()
         reply = tutor.reply("My name is Euloge")
         self.assertNotIn("Do you like it", reply.text)
         self.assertIn("Where do you live", reply.text)
+
+
+class DefaultBehaviourTest(unittest.TestCase):
+    def setUp(self):
+        self.course = load_course(COURSES / "se_presenter.json")
+
+    def test_canned_reaction_makes_no_llm_call(self):
+        llm = FakeLLM("should not be used")
+        tutor = Tutor(self.course, llm, Config())
+        tutor.start()
+        reply = tutor.reply("My name is Euloge")
+        self.assertEqual(llm.calls, [])
+        self.assertTrue(reply.text.startswith("Good!"))
+        self.assertIn("Where do you live", reply.text)
+
+    def test_canned_reaction_includes_correction(self):
+        tutor = Tutor(self.course, FakeLLM(), Config())
+        tutor.start()
+        reply = tutor.reply("I am student")
+        self.assertIn("Better: I am a student", reply.text)
+
+    def test_inappropriate_sentence_in_guided_course(self):
+        tutor = Tutor(self.course, FakeLLM(), Config())
+        tutor.start()
+        tutor.reply("My name is Euloge")
+        tutor.reply("I live in Paris")
+        tutor.reply("I am 20 years old")
+        blocked = tutor.reply("I like fuck girls")
+        self.assertEqual(blocked.step_id, "hobby")
+        self.assertIn("friendly", blocked.text)
+        ok = tutor.reply("I like football")
+        self.assertEqual(ok.step_id, "skill")
+
+    def test_inappropriate_sentence_in_free_mode(self):
+        llm = FakeLLM("unused")
+        tutor = Tutor(load_course(COURSES / "libre.json"), llm, Config())
+        tutor.start()
+        reply = tutor.reply("fuck")
+        self.assertIn("something else", reply.text)
+        self.assertEqual(llm.calls, [])
+
+    def test_clean_text_removes_dangling_quotes(self):
+        self.assertEqual(
+            clean_text('Great, you\'re saying "I live in Kutun.'),
+            "Great, you're saying I live in Kutun.",
+        )
+
+
+class VoiceLogicTest(unittest.TestCase):
+    def setUp(self):
+        self.course = load_course(COURSES / "se_presenter.json")
+
+    def test_fragment_detection(self):
+        name, age = self.course.steps[0], self.course.steps[2]
+        self.assertTrue(check_step(age, "I am.").incomplete)
+        self.assertTrue(check_step(name, "My name is").incomplete)
+        self.assertFalse(check_step(age, "I am 20 years old").incomplete)
+        self.assertFalse(check_step(name, "My name is Paul").incomplete)
+
+    def test_fragment_is_encouraged_without_penalty(self):
+        tutor = Tutor(self.course, FakeLLM(), Config())
+        tutor.start()
+        tutor.reply("My name is Paul")
+        tutor.reply("I live in Paris")
+        keep = tutor.reply("I am.")
+        self.assertEqual(keep.step_id, "age")
+        self.assertIn("Keep going", keep.text)
+        self.assertEqual(tutor.attempts, 0)
+        done = tutor.reply("I am 20 years old")
+        self.assertEqual(done.step_id, "hobby")
+        self.assertTrue(done.text.startswith("Much better!"))
+
+    def test_repeated_fragment_eventually_counts_as_failure(self):
+        tutor = Tutor(self.course, FakeLLM(), Config())
+        tutor.start()
+        tutor.reply("My name is Paul")
+        tutor.reply("I live in Paris")
+        for _ in range(2):
+            self.assertIn("Keep going", tutor.reply("I am.").text)
+        third = tutor.reply("I am.")
+        self.assertIn("years old", third.text)
+        self.assertEqual(third.step_id, "age")
+        self.assertEqual(tutor.attempts, 1)
+
+    def test_second_try_gets_much_better(self):
+        tutor = Tutor(self.course, FakeLLM(), Config())
+        tutor.start()
+        tutor.reply("Paul")
+        reply = tutor.reply("My name is Paul")
+        self.assertTrue(reply.text.startswith("Much better!"))
+
+    def test_self_correction_gets_praise(self):
+        tutor = Tutor(self.course, FakeLLM(), Config())
+        tutor.start()
+        # L'eleve hesite et se reprend au premier essai : "I call me no My name is Paul"
+        reply = tutor.reply("I call me no My name is Paul")
+        self.assertTrue(reply.text.startswith("Great self-correction!"))
+
+    def test_not_understood_does_not_count_as_failure(self):
+        tutor = Tutor(self.course, FakeLLM(), Config())
+        tutor.start()
+        first = tutor.not_understood()
+        self.assertIn("didn't catch", first.text)
+        self.assertNotIn("slowly", first.text)
+        self.assertEqual(first.step_id, "name")
+        second = tutor.not_understood()
+        self.assertIn("slowly", second.text)
+        self.assertIn("My name is", second.text)
+        self.assertEqual(tutor.attempts, 0)
+        tutor.reply("My name is Paul")
+        third = tutor.not_understood()
+        self.assertNotIn("slowly", third.text)
+
+    def test_example_is_given_when_moving_on(self):
+        tutor = Tutor(self.course, FakeLLM(), Config())
+        tutor.start()
+        tutor.reply("hmm")
+        reply = tutor.reply("hmm")
+        self.assertIn(self.course.steps[0].example, reply.text)
 
 
 class FreeModeTest(unittest.TestCase):
