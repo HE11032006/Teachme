@@ -14,6 +14,7 @@ from .llm import LLMError
 from .repair import repair_utterance
 from .validator import rule_based_check, validate_llm_output, EvaluationResult
 from .analyzer_prompt import build_analysis_prompt
+from .progress import ProgressTracker
 
 REACTION_SYSTEM = (
     "You are a kind English tutor for a {level} learner. "
@@ -84,6 +85,7 @@ class Tutor:
         self.unclear = 0           # "pas compris" de suite (reconnaissance vocale)
         self.history = []          # historique (parcours libre)
         self.session_id = store.new_session(course.id) if store else None
+        self.tracker = ProgressTracker(store) if store else None
 
     # --- API publique ---------------------------------------------------------
 
@@ -161,6 +163,12 @@ class Tutor:
 
         passed = eval_res.passed
         self._log("student", user_text, step.id, raw_text=raw_text, was_repaired=was_repaired, passed=passed)
+
+        # Mise a jour du modele de maitrise a 5 etats (§4.3)
+        if self.tracker:
+            used_help = (self.attempts > 0 or self.incomplete_count > 0)
+            comp_id = f"{self.course.id}.{step.id}"
+            self.tracker.evaluate_attempt(comp_id, passed, used_help, was_repaired)
 
         # 2. Gestion de l'échec selon le type d'erreur
         if not passed:

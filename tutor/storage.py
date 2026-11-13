@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     started_at REAL NOT NULL,
     ended_at REAL
 );
+
 CREATE TABLE IF NOT EXISTS turns (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id INTEGER NOT NULL REFERENCES sessions(id),
@@ -20,6 +21,33 @@ CREATE TABLE IF NOT EXISTS turns (
     raw_text TEXT,
     was_repaired INTEGER DEFAULT 0,
     passed INTEGER,
+    stt_confidence REAL,
+    ts REAL NOT NULL
+);
+
+-- Modele de maitrise a 5 etats (§4.3)
+CREATE TABLE IF NOT EXISTS competencies (
+    id TEXT PRIMARY KEY,               -- ex: 'intro.name', 'intro.city', 'intro.age'
+    state TEXT NOT NULL,               -- DECOUVERTE, COMPRIS, UTILISE_AVEC_AIDE, UTILISE_SPONTANEMENT, MAITRISE_RETENU
+    consecutive_successes INTEGER DEFAULT 0,
+    consecutive_failures INTEGER DEFAULT 0,
+    recurring_errors_count INTEGER DEFAULT 0,
+    last_evaluated_at REAL NOT NULL,
+    next_review_at REAL                -- Pour la repetition espacee (Phase 3)
+);
+
+-- Table dediee aux echantillons de fine-tuning (§4.8)
+CREATE TABLE IF NOT EXISTS training_samples (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER REFERENCES sessions(id),
+    step_id TEXT,
+    raw_text TEXT NOT NULL,
+    cleaned_text TEXT NOT NULL,
+    was_repaired INTEGER DEFAULT 0,
+    self_corrected INTEGER DEFAULT 0,
+    llm_response TEXT,
+    target_correction TEXT,
+    stt_confidence REAL,
     ts REAL NOT NULL
 );
 """
@@ -41,6 +69,8 @@ class Store:
             self.db.execute("ALTER TABLE turns ADD COLUMN raw_text TEXT")
         if "was_repaired" not in cols:
             self.db.execute("ALTER TABLE turns ADD COLUMN was_repaired INTEGER DEFAULT 0")
+        if "stt_confidence" not in cols:
+            self.db.execute("ALTER TABLE turns ADD COLUMN stt_confidence REAL")
         self.db.commit()
 
     def new_session(self, course_id):
@@ -51,10 +81,10 @@ class Store:
         self.db.commit()
         return cur.lastrowid
 
-    def log_turn(self, session_id, step_id, role, text, raw_text=None, was_repaired=False, passed=None):
+    def log_turn(self, session_id, step_id, role, text, raw_text=None, was_repaired=False, passed=None, stt_confidence=None):
         self.db.execute(
-            """INSERT INTO turns (session_id, step_id, role, text, raw_text, was_repaired, passed, ts)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO turns (session_id, step_id, role, text, raw_text, was_repaired, passed, stt_confidence, ts)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 session_id,
                 step_id,
@@ -63,8 +93,51 @@ class Store:
                 raw_text or text,
                 int(was_repaired),
                 None if passed is None else int(passed),
+                stt_confidence,
                 time.time(),
             ),
+        )
+        self.db.commit()
+
+    def log_training_sample(self, session_id, step_id, raw_text, cleaned_text, was_repaired, self_corrected, llm_response, target_correction, stt_confidence):
+        """Enregistre un exemple d'entrainement de haute qualite (§4.8)."""
+        self.db.execute(
+            """INSERT INTO training_samples (session_id, step_id, raw_text, cleaned_text, was_repaired, self_corrected, llm_response, target_correction, stt_confidence, ts)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                session_id,
+                step_id,
+                raw_text,
+                cleaned_text,
+                int(was_repaired),
+                int(self_corrected),
+                llm_response,
+                target_correction,
+                stt_confidence,
+                time.time(),
+            ),
+        )
+        self.db.commit()
+
+    def get_competency(self, comp_id):
+        cur = self.db.execute(
+            "SELECT id, state, consecutive_successes, consecutive_failures, recurring_errors_count, last_evaluated_at, next_review_at FROM competencies WHERE id = ?",
+            (comp_id,),
+        )
+        return cur.fetchone()
+
+    def save_competency(self, comp_id, state, successes, failures, errors_count, next_review_at=None):
+        self.db.execute(
+            """INSERT INTO competencies (id, state, consecutive_successes, consecutive_failures, recurring_errors_count, last_evaluated_at, next_review_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                   state = excluded.state,
+                   consecutive_successes = excluded.consecutive_successes,
+                   consecutive_failures = excluded.consecutive_failures,
+                   recurring_errors_count = excluded.recurring_errors_count,
+                   last_evaluated_at = excluded.last_evaluated_at,
+                   next_review_at = excluded.next_review_at""",
+            (comp_id, state, successes, failures, errors_count, time.time(), next_review_at),
         )
         self.db.commit()
 
