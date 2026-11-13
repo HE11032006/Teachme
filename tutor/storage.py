@@ -119,6 +119,17 @@ class Store:
         )
         self.db.commit()
 
+    def get_competencies_due_for_review(self, current_time=None):
+        """Retourne les competences dont la date de revision est echue (Phase 3)."""
+        now = current_time or time.time()
+        cur = self.db.execute(
+            """SELECT id, state, next_review_at FROM competencies
+               WHERE next_review_at IS NOT NULL AND next_review_at <= ?
+               ORDER BY next_review_at ASC""",
+            (now,),
+        )
+        return cur.fetchall()
+
     def get_competency(self, comp_id):
         cur = self.db.execute(
             "SELECT id, state, consecutive_successes, consecutive_failures, recurring_errors_count, last_evaluated_at, next_review_at FROM competencies WHERE id = ?",

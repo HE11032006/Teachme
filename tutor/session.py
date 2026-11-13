@@ -15,6 +15,7 @@ from .repair import repair_utterance
 from .validator import rule_based_check, validate_llm_output, EvaluationResult
 from .analyzer_prompt import build_analysis_prompt
 from .progress import ProgressTracker
+from .scheduler import ReviewScheduler
 
 REACTION_SYSTEM = (
     "You are a kind English tutor for a {level} learner. "
@@ -86,6 +87,7 @@ class Tutor:
         self.history = []          # historique (parcours libre)
         self.session_id = store.new_session(course.id) if store else None
         self.tracker = ProgressTracker(store) if store else None
+        self.scheduler = ReviewScheduler(store) if store else None
 
     # --- API publique ---------------------------------------------------------
 
@@ -124,6 +126,12 @@ class Tutor:
         if self.store and self.session_id:
             self.store.close_session(self.session_id)
 
+    def get_due_reviews(self):
+        """Retourne la liste des comp_id à réviser aujourd'hui (pour l'annonce au démarrage)."""
+        if self.scheduler:
+            return self.scheduler.get_due_reviews()
+        return []
+
     # --- Parcours guide -------------------------------------------------------
 
     def _reply_guided(self, user_text, raw_text="", was_repaired=False):
@@ -132,6 +140,18 @@ class Tutor:
             self._log("student", user_text, step.id, raw_text=raw_text, was_repaired=was_repaired, passed=False)
             text = f"Let's keep it friendly. Try again: {step.opening}"
             return self._emit(text, "", False, step.id)
+
+        # --- Phase 4 : saut d'étape si compétence déjà maîtrisée (3 réussites spontanées) ---
+        comp_id = f"{self.course.id}.{step.id}"
+        if self.scheduler and self.scheduler.should_skip_step(comp_id):
+            self.index += 1
+            self.attempts = 0
+            self.incomplete_count = 0
+            if self.index >= len(self.course.steps):
+                self.close()
+                return self._emit(f"Great, you already know this! {self.course.closing}", "", True, step.id)
+            nxt = self.course.steps[self.index]
+            return self._emit(f"Great, you already know this! {nxt.opening}", "", False, nxt.id)
 
         # Gestion des fragments et phrases coupees (ex: "I am.") avant verification lourde
         ev_old = check_step(step, user_text)
@@ -164,11 +184,35 @@ class Tutor:
         passed = eval_res.passed
         self._log("student", user_text, step.id, raw_text=raw_text, was_repaired=was_repaired, passed=passed)
 
+        # --- §4.8 : Journalisation pour fine-tuning (succès ET échecs) ---
+        if self.store and self.session_id:
+            target_correction = eval_res.corrected if (eval_res.corrected and eval_res.error_type != "none") else None
+            self.store.log_training_sample(
+                session_id=self.session_id,
+                step_id=step.id,
+                raw_text=raw_text,
+                cleaned_text=user_text,
+                was_repaired=was_repaired,
+                self_corrected=was_repaired and passed,
+                llm_response=getattr(eval_res, "source", "rules"),
+                target_correction=target_correction,
+                stt_confidence=None,  # branché depuis main.py si disponible
+            )
+
         # Mise a jour du modele de maitrise a 5 etats (§4.3)
         if self.tracker:
             used_help = (self.attempts > 0 or self.incomplete_count > 0)
-            comp_id = f"{self.course.id}.{step.id}"
             self.tracker.evaluate_attempt(comp_id, passed, used_help, was_repaired)
+
+        # --- Phase 4 : remédiation si 3 échecs consécutifs ---
+        if not passed and self.scheduler and self.scheduler.needs_remediation(comp_id):
+            model = step.example or step.target
+            hint = step.hint_fr or "Écoute bien et répète."
+            lead = f"Let's slow down. Listen carefully: {model}" if model else "Let's slow down and try again."
+            # On reset les compteurs pour repartir proprement après la remédiation
+            self.attempts = 0
+            self.incomplete_count = 0
+            return self._emit(lead, hint, False, step.id)
 
         # 2. Gestion de l'échec selon le type d'erreur
         if not passed:
