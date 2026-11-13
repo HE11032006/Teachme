@@ -24,12 +24,20 @@ class OllamaLLM:
         except Exception:
             return False
 
+    def warm_up(self):
+        """Charge le modele en memoire (evite ~10 s d'attente au premier tour)."""
+        try:
+            self.complete([{"role": "user", "content": "Hi"}], max_tokens=1)
+        except LLMError:
+            pass
+
     def complete(self, messages, max_tokens=60):
         payload = {
             "model": self.model,
             "messages": messages,
             "stream": False,
             "options": {"temperature": self.temperature, "num_predict": max_tokens},
+            "keep_alive": "30m",
         }
         if "qwen3" in self.model:
             payload["think"] = False  # desactive le mode reflexion de Qwen3
