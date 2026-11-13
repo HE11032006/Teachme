@@ -11,8 +11,9 @@ audio/
 *.gguf
 *.bin
 
-# Donnees locales (base SQLite)
+# Donnees locales (base SQLite, voix Piper et cache audio)
 data/
+voices/
 
 # Secrets
 .env
