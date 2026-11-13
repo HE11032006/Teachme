@@ -1,0 +1,18 @@
+# Environnement Python
+.venv/
+__pycache__/
+*.pyc
+
+# Modeles et audio (trop lourds pour Git)
+models/
+audio/
+*.wav
+*.onnx
+*.gguf
+*.bin
+
+# Donnees locales (base SQLite)
+data/
+
+# Secrets
+.env
