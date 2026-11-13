@@ -78,11 +78,23 @@ def run_voice(tutor, cfg):
         text = heard.text
         stats = f"stt {t_stt:.1f} s | confiance {heard.logprob:.2f} | non-parole {heard.no_speech:.2f}"
 
-        unsure = (not text
-                  or text.lower().strip(" .!?") in HALLUCINATIONS
-                  or not heard.confident(cfg.min_logprob, cfg.max_no_speech))
-        if unsure:
-            print(f"(entendu : {text!r})  [{stats}]")
+        # §4.7 : Exploitation des signaux STT
+        # Si confiance trop faible : ne pas évaluer comme faute, faire répéter gentiment
+        low_confidence = heard.logprob < cfg.min_logprob
+        # Si forte probabilité de non-parole / hésitation bloquée
+        high_no_speech = heard.no_speech > cfg.max_no_speech
+        hallucinated = text.lower().strip(" .!?") in HALLUCINATIONS
+
+        if not text or hallucinated or low_confidence:
+            print(f"(confiance faible : {text!r})  [{stats}]")
+            reply = tutor.not_understood()
+            show(reply)
+            tts.speak(reply.text)
+            continue
+
+        if high_no_speech:
+            print(f"(hesitation ou bruit détecté)  [{stats}]")
+            # Propose un indice sans compter d'échec
             reply = tutor.not_understood()
             show(reply)
             tts.speak(reply.text)

@@ -20,8 +20,8 @@ class Config:
     # Reconnaissance vocale
     whisper_model: str = "tiny.en"  # Modèle dédié anglais : plus rapide et plus précis que "tiny"
     whisper_threads: int = 4        # Utilise les 4 cœurs physiques sans saturer le système
-    min_logprob: float = -1.2       # en dessous : Whisper n'est pas sur de ce qu'il a entendu
-    max_no_speech: float = 0.6      # au dessus : probablement pas de la parole
+    min_logprob: float = -0.8       # §4.7 : confiance minimale stricte (en dessous, on demande de répéter)
+    max_no_speech: float = 0.3      # §4.7 : au dessus de 30% de non-parole, suspecte un blocage/bruit
 
     # Micro (detection adaptative de parole et de fin de phrase)
     sample_rate: int = 16000
