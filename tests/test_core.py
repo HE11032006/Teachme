@@ -106,7 +106,8 @@ class GuidedCourseTest(unittest.TestCase):
         tutor.start()
         first = tutor.reply("Euloge")
         self.assertEqual(first.step_id, "name")
-        self.assertIn("My name is", first.text)
+        self.assertIn("Try again", first.text)
+        self.assertIn("My name is", first.hint_fr)
         self.assertFalse(first.finished)
         second = tutor.reply("hmm")
         self.assertEqual(second.step_id, "city")
@@ -119,7 +120,8 @@ class GuidedCourseTest(unittest.TestCase):
         tutor.reply("I live in Paris")
         reply = tutor.reply("I have 24 years")
         self.assertEqual(reply.step_id, "age")
-        self.assertIn("I am 24 years old", reply.text)
+        self.assertIn("Try again", reply.text)
+        self.assertIn("I am ... years old", reply.hint_fr)
 
     def test_llm_down_uses_fallback(self):
         tutor = Tutor(self.course, BrokenLLM(), Config(llm_reactions=True))
@@ -214,7 +216,8 @@ class VoiceLogicTest(unittest.TestCase):
         for _ in range(2):
             self.assertIn("Keep going", tutor.reply("I am.").text)
         third = tutor.reply("I am.")
-        self.assertIn("years old", third.text)
+        self.assertIn("Try again", third.text)
+        self.assertIn("years old", third.hint_fr)
         self.assertEqual(third.step_id, "age")
         self.assertEqual(tutor.attempts, 1)
 

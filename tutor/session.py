@@ -16,6 +16,7 @@ from .validator import rule_based_check, validate_llm_output, EvaluationResult
 from .analyzer_prompt import build_analysis_prompt
 from .progress import ProgressTracker
 from .scheduler import ReviewScheduler
+from .pronunciation import assess_pronunciation
 
 REACTION_SYSTEM = (
     "You are a kind English tutor for a {level} learner. "
@@ -85,6 +86,7 @@ class Tutor:
         self.incomplete_count = 0  # phrases interrompues sur l'etape courante
         self.unclear = 0           # "pas compris" de suite (reconnaissance vocale)
         self.history = []          # historique (parcours libre)
+        self._deferred_corrections = []  # corrections différées mode libre (§4.6)
         self.session_id = store.new_session(course.id) if store else None
         self.tracker = ProgressTracker(store) if store else None
         self.scheduler = ReviewScheduler(store) if store else None
@@ -99,7 +101,7 @@ class Tutor:
         # Interdiction §4.1 : Ne JAMAIS afficher la phrase cible avant l'essai de l'élève
         return self._emit(step.opening, "", False, step.id)
 
-    def reply(self, user_text):
+    def reply(self, user_text, word_confidences=None, stt_confidence=None):
         self.unclear = 0
         raw_text = user_text
         # Reparation automatique des hesitations et fausses reprises
@@ -108,7 +110,9 @@ class Tutor:
 
         if self.course.mode == "free":
             return self._reply_free(cleaned_text, raw_text, repaired.was_repaired)
-        return self._reply_guided(cleaned_text, raw_text, repaired.was_repaired)
+        return self._reply_guided(cleaned_text, raw_text, repaired.was_repaired,
+                                  word_confidences=word_confidences,
+                                  stt_confidence=stt_confidence)
 
     def not_understood(self):
         """Whisper n'est pas sur de ce qu'il a entendu : on redemande, sans compter d'echec."""
@@ -132,9 +136,25 @@ class Tutor:
             return self.scheduler.get_due_reviews()
         return []
 
+    def session_summary(self):
+        """Génère le bilan oral de fin de session mode libre (§4.6).
+
+        Les corrections ne sont jamais montrées en cours de session.
+        Retourne une chaîne vide si aucune correction différée.
+        """
+        if not self._deferred_corrections:
+            return ""
+        lines = ["Here is a quick summary of things to remember:"]
+        for original, corrected in self._deferred_corrections[:3]:  # max 3 pour rester court
+            lines.append(f"You said '{original}'. Better: '{corrected}'.")
+        extra = len(self._deferred_corrections) - 3
+        if extra > 0:
+            lines.append(f"And {extra} more — keep practising!")
+        return " ".join(lines)
+
     # --- Parcours guide -------------------------------------------------------
 
-    def _reply_guided(self, user_text, raw_text="", was_repaired=False):
+    def _reply_guided(self, user_text, raw_text="", was_repaired=False, word_confidences=None, stt_confidence=None):
         step = self.course.steps[self.index]
         if is_inappropriate(user_text):
             self._log("student", user_text, step.id, raw_text=raw_text, was_repaired=was_repaired, passed=False)
@@ -182,7 +202,7 @@ class Tutor:
                 eval_res = validate_llm_output(raw_eval, user_text)
 
         passed = eval_res.passed
-        self._log("student", user_text, step.id, raw_text=raw_text, was_repaired=was_repaired, passed=passed)
+        self._log("student", user_text, step.id, raw_text=raw_text, was_repaired=was_repaired, passed=passed, stt_confidence=stt_confidence)
 
         # --- §4.8 : Journalisation pour fine-tuning (succès ET échecs) ---
         if self.store and self.session_id:
@@ -196,7 +216,7 @@ class Tutor:
                 self_corrected=was_repaired and passed,
                 llm_response=getattr(eval_res, "source", "rules"),
                 target_correction=target_correction,
-                stt_confidence=None,  # branché depuis main.py si disponible
+                stt_confidence=stt_confidence,
             )
 
         # Mise a jour du modele de maitrise a 5 etats (§4.3)
@@ -217,7 +237,6 @@ class Tutor:
         # 2. Gestion de l'échec selon le type d'erreur
         if not passed:
             self.attempts += 1
-            hint_fr = ""
 
             if eval_res.error_type == "off_topic":
                 lead = "You didn't answer the question."
@@ -225,19 +244,42 @@ class Tutor:
                 text = f"{lead} {step.opening}"
                 return self._emit(text, hint_fr, False, step.id)
 
+            # §4.2 — Indices progressifs : on ne montre JAMAIS la phrase cible d'emblée
+            #   Échec 1 → hint_fr seulement (intention en français)
+            #   Échec 2 → hint_en si disponible (amorce anglaise), sinon hint_fr
+            #   Échec 3+ (ou max_attempts dépassé) → phrase complète
             if self.attempts < step.max_attempts:
-                correction = eval_res.corrected or (ev_old.corrections[0] if ev_old.corrections else None)
-                if correction:
-                    text = f"Almost! You can say: {correction}."
+                if self.attempts == 1:
+                    # Niveau 1 : encouragement + intention en français uniquement
+                    text = "Not quite. Try again!"
+                    hint_fr = step.hint_fr or "Réfléchis à ce que tu veux dire."
                 else:
-                    text = f"Let's try again. You can say: {step.target}"
-                return self._emit(text, step.hint_fr, False, step.id)
+                    # Niveau 2 : amorce anglaise (ou hint_fr si hint_en absent)
+                    if step.hint_en:
+                        text = f"Try starting with: {step.hint_en}"
+                        hint_fr = step.hint_fr
+                    else:
+                        # Fallback : on donne la correction ciblée (comportement actuel)
+                        correction = eval_res.corrected or (ev_old.corrections[0] if ev_old.corrections else None)
+                        if correction:
+                            text = f"Almost! You can say: {correction}."
+                        else:
+                            text = f"Try: {step.target}"
+                        hint_fr = step.hint_fr
+                return self._emit(text, hint_fr, False, step.id)
 
+            # Niveau 3 (max_attempts atteint) : phrase complète
             model = step.example or step.target
             lead = f"No problem. A good answer is: {model}" if model else "No problem."
         else:
             corrections = [eval_res.corrected] if (eval_res.corrected and eval_res.error_type != "none") else ev_old.corrections
             lead = self._reaction(user_text, corrections, was_repaired)
+            # §4.9 — Feedback prononciation uniquement sur réponse correcte
+            # (ne pas surcharger l'élève quand il y a déjà une correction grammaticale)
+            if word_confidences and not corrections:
+                pron_fb = assess_pronunciation(word_confidences)
+                if pron_fb.has_issues:
+                    lead = f"{lead} {pron_fb.message}"
 
         self.index += 1
         self.attempts = 0
@@ -301,6 +343,9 @@ class Tutor:
         corrections = find_corrections(user_text)
         if corrections:
             last += f'\n[Tutor note: the better sentence is "{corrections[0]}"]'
+            # §4.6 : stocker la correction pour le bilan de fin de session
+            # Ne jamais interrompre le flux — on corrige seulement à la fin
+            self._deferred_corrections.append((user_text, corrections[0]))
         messages.append({"role": "user", "content": last})
 
         try:
@@ -319,6 +364,6 @@ class Tutor:
         self._log("tutor", text, step_id)
         return TutorReply(text, hint_fr, finished, step_id)
 
-    def _log(self, role, text, step_id, raw_text=None, was_repaired=False, passed=None):
+    def _log(self, role, text, step_id, raw_text=None, was_repaired=False, passed=None, stt_confidence=None):
         if self.store:
-            self.store.log_turn(self.session_id, step_id, role, text, raw_text, was_repaired, passed)
+            self.store.log_turn(self.session_id, step_id, role, text, raw_text, was_repaired, passed, stt_confidence)

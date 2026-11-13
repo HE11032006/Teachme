@@ -12,8 +12,10 @@ class Step:
     opening: str                      # ce que le prof dit pour lancer l'etape
     target: str = ""                  # phrase modele, ex. "My name is ..."
     pass_any: list = field(default_factory=list)  # motifs regex : un seul suffit
-    hint_fr: str = ""                 # aide affichee en francais
+    hint_fr: str = ""                 # aide affichee en francais (echec 1)
+    hint_en: str = ""                 # amorce anglaise, ex. "My name..." (echec 2 — §4.2)
     max_attempts: int = 2
+    example: str = ""                 # bonne reponse complete, dite si l'eleve bloque
     vocab: list = field(default_factory=list)
 
 
@@ -63,6 +65,7 @@ MISTAKE_RULES = [
 class Evaluation:
     passed: bool
     corrections: list
+    incomplete: bool = False   # la phrase s'est arretee apres le debut (ex. "I am.")
 
 
 def normalize(text):
@@ -81,6 +84,16 @@ def find_corrections(text):
     return found
 
 
+def _words(text):
+    return re.findall(r"[a-z']+", text.lower())
+
+
+def is_fragment(step, text):
+    """La personne s'est arretee apres le debut de la phrase modele (ex. 'I am.')."""
+    prefix = _words(step.target.split("...")[0])
+    return bool(prefix) and _words(text) == prefix
+
+
 def check_step(step, text):
     """La reponse contient-elle une tournure attendue ? Quelles erreurs frequentes ?"""
     text = normalize(text)
@@ -88,4 +101,4 @@ def check_step(step, text):
         passed = any(re.search(p, text, re.I) for p in step.pass_any)
     else:
         passed = bool(text)
-    return Evaluation(passed, find_corrections(text))
+    return Evaluation(passed, find_corrections(text), is_fragment(step, text))
