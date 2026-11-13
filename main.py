@@ -28,6 +28,12 @@ def show(reply):
 
 
 def run_text(tutor):
+    # Annonce des révisions dues (§Phase 3)
+    due = tutor.get_due_reviews()
+    if due:
+        labels = [r.split(".")[-1].replace("_", " ") for r in due]
+        print(f"\n📚 Révisions du jour : {', '.join(labels)}")
+
     reply = tutor.start()
     show(reply)
     while not reply.finished:
@@ -58,6 +64,14 @@ def run_voice(tutor, cfg):
     ambient = calibrate_noise(cfg.sample_rate, 1.0)
     threshold = max(cfg.energy_threshold, ambient * 3)
     print(f"Bruit ambiant : {ambient:.4f} | seuil de detection : {threshold:.4f}")
+
+    # Annonce des révisions dues (§Phase 3)
+    due = tutor.get_due_reviews()
+    if due:
+        labels = [r.split(".")[-1].replace("_", " ") for r in due]
+        msg = f"Let's review something from last time first: {', '.join(labels)}."
+        print(f"\nProf (révision) : {msg}")
+        tts.speak(msg)
 
     reply = tutor.start()
     show(reply)
