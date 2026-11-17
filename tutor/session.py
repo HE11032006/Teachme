@@ -87,9 +87,20 @@ class Tutor:
         self.unclear = 0           # "pas compris" de suite (reconnaissance vocale)
         self.history = []          # historique (parcours libre)
         self._deferred_corrections = []  # corrections différées mode libre (§4.6)
+        self.in_remediation = False  # drapeau de remédiation en cours
         self.session_id = store.new_session(course.id) if store else None
         self.tracker = ProgressTracker(store) if store else None
         self.scheduler = ReviewScheduler(store) if store else None
+
+    def _advance_to_next_active_step(self):
+        """Avance self.index par-dessus toutes les étapes déjà maîtrisées (Phase 4)."""
+        while self.index < len(self.course.steps):
+            step = self.course.steps[self.index]
+            comp_id = f"{self.course.id}.{step.id}"
+            if self.scheduler and self.scheduler.should_skip_step(comp_id):
+                self.index += 1
+            else:
+                break
 
     # --- API publique ---------------------------------------------------------
 
@@ -97,8 +108,18 @@ class Tutor:
         if self.course.mode == "free":
             self.history.append({"role": "assistant", "content": self.course.free_opening})
             return self._emit(self.course.free_opening, "", False, "free")
-        step = self.course.steps[0]
-        # Interdiction §4.1 : Ne JAMAIS afficher la phrase cible avant l'essai de l'élève
+
+        # Saut automatique avant même de poser la première question si déjà maîtrisée
+        start_idx = self.index
+        self._advance_to_next_active_step()
+        if self.index >= len(self.course.steps):
+            self.close()
+            return self._emit(f"You already mastered all steps! {self.course.closing}", "", True, "completed")
+
+        step = self.course.steps[self.index]
+        if self.index > start_idx:
+            lead = "You already mastered the first steps! "
+            return self._emit(f"{lead}{step.opening}", "", False, step.id)
         return self._emit(step.opening, "", False, step.id)
 
     def reply(self, user_text, word_confidences=None, stt_confidence=None):
@@ -161,17 +182,7 @@ class Tutor:
             text = f"Let's keep it friendly. Try again: {step.opening}"
             return self._emit(text, "", False, step.id)
 
-        # --- Phase 4 : saut d'étape si compétence déjà maîtrisée (3 réussites spontanées) ---
         comp_id = f"{self.course.id}.{step.id}"
-        if self.scheduler and self.scheduler.should_skip_step(comp_id):
-            self.index += 1
-            self.attempts = 0
-            self.incomplete_count = 0
-            if self.index >= len(self.course.steps):
-                self.close()
-                return self._emit(f"Great, you already know this! {self.course.closing}", "", True, step.id)
-            nxt = self.course.steps[self.index]
-            return self._emit(f"Great, you already know this! {nxt.opening}", "", False, nxt.id)
 
         # Gestion des fragments et phrases coupees (ex: "I am.") avant verification lourde
         ev_old = check_step(step, user_text)
@@ -224,14 +235,14 @@ class Tutor:
             used_help = (self.attempts > 0 or self.incomplete_count > 0)
             self.tracker.evaluate_attempt(comp_id, passed, used_help, was_repaired)
 
-        # --- Phase 4 : remédiation si 3 échecs consécutifs ---
-        if not passed and self.scheduler and self.scheduler.needs_remediation(comp_id):
+        # --- Phase 4 : remédiation si 3 échecs consécutifs (déclenchée une seule fois par étape) ---
+        if not passed and self.scheduler and self.scheduler.needs_remediation(comp_id) and not self.in_remediation:
+            self.in_remediation = True
+            self.attempts = 0
+            self.incomplete_count = 0
             model = step.example or step.target
             hint = step.hint_fr or "Écoute bien et répète."
             lead = f"Let's slow down. Listen carefully: {model}" if model else "Let's slow down and try again."
-            # On reset les compteurs pour repartir proprement après la remédiation
-            self.attempts = 0
-            self.incomplete_count = 0
             return self._emit(lead, hint, False, step.id)
 
         # 2. Gestion de l'échec selon le type d'erreur
@@ -244,50 +255,58 @@ class Tutor:
                 text = f"{lead} {step.opening}"
                 return self._emit(text, hint_fr, False, step.id)
 
-            # §4.2 — Indices progressifs : on ne montre JAMAIS la phrase cible d'emblée
-            #   Échec 1 → hint_fr seulement (intention en français)
-            #   Échec 2 → hint_en si disponible (amorce anglaise), sinon hint_fr
-            #   Échec 3+ (ou max_attempts dépassé) → phrase complète
-            if self.attempts < step.max_attempts:
+            # Issue de secours si l'élève échoue après la remédiation (évite le blocage infini)
+            if self.in_remediation and self.attempts >= 2:
+                if self.tracker:
+                    self.tracker.mark_for_retest(comp_id)
+                self.in_remediation = False
+                model = step.example or step.target
+                lead = f"No problem, we will review this later. A good answer was: {model}" if model else "No problem, we will review this later."
+            elif self.attempts < step.max_attempts:
+                # §4.2 — Indices progressifs :
+                #   Échec 1 → hint_fr seulement
+                #   Échec 2 → hint_en (amorce) si disponible
                 if self.attempts == 1:
-                    # Niveau 1 : encouragement + intention en français uniquement
                     text = "Not quite. Try again!"
                     hint_fr = step.hint_fr or "Réfléchis à ce que tu veux dire."
                 else:
-                    # Niveau 2 : amorce anglaise (ou hint_fr si hint_en absent)
                     if step.hint_en:
                         text = f"Try starting with: {step.hint_en}"
                         hint_fr = step.hint_fr
                     else:
-                        # Fallback : on donne la correction ciblée (comportement actuel)
                         correction = eval_res.corrected or (ev_old.corrections[0] if ev_old.corrections else None)
-                        if correction:
-                            text = f"Almost! You can say: {correction}."
-                        else:
-                            text = f"Try: {step.target}"
+                        text = f"Almost! You can say: {correction}." if correction else f"Try: {step.target}"
                         hint_fr = step.hint_fr
                 return self._emit(text, hint_fr, False, step.id)
-
-            # Niveau 3 (max_attempts atteint) : phrase complète
-            model = step.example or step.target
-            lead = f"No problem. A good answer is: {model}" if model else "No problem."
+            else:
+                model = step.example or step.target
+                lead = f"No problem. A good answer is: {model}" if model else "No problem."
         else:
+            self.in_remediation = False
             corrections = [eval_res.corrected] if (eval_res.corrected and eval_res.error_type != "none") else ev_old.corrections
             lead = self._reaction(user_text, corrections, was_repaired)
             # §4.9 — Feedback prononciation uniquement sur réponse correcte
-            # (ne pas surcharger l'élève quand il y a déjà une correction grammaticale)
             if word_confidences and not corrections:
                 pron_fb = assess_pronunciation(word_confidences)
                 if pron_fb.has_issues:
                     lead = f"{lead} {pron_fb.message}"
 
+        # Passage à l'étape suivante avec saut automatique des étapes maîtrisées
         self.index += 1
         self.attempts = 0
         self.incomplete_count = 0
+        self.in_remediation = False
+
+        old_idx = self.index
+        self._advance_to_next_active_step()
+        skipped = self.index - old_idx
+
         if self.index >= len(self.course.steps):
             self.close()
             return self._emit(f"{lead} {self.course.closing}", "", True, step.id)
         nxt = self.course.steps[self.index]
+        if skipped > 0:
+            lead = f"{lead} (Next step already mastered!)"
         return self._emit(f"{lead} {nxt.opening}", "", False, nxt.id)
 
     def _canned_reaction(self, corrections, was_repaired=False):

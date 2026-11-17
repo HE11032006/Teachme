@@ -79,3 +79,23 @@ class ProgressTracker:
 
         return new_state.value
 
+    def mark_for_retest(self, competency_id: str) -> None:
+        """Marque une compétence comme à revoir d'urgence (J+1) suite à échec de remédiation."""
+        if not self.store:
+            return
+        row = self.store.get_competency(competency_id)
+        if row:
+            _, _, successes, failures, errors_count, _, _ = row
+        else:
+            successes, failures, errors_count = 0, 0, 0
+        # Planifie une révision rapprochée (J+1)
+        next_review_at = time.time() + 86400
+        self.store.save_competency(
+            competency_id,
+            MasteryState.UTILISE_AVEC_AIDE.value,
+            0,
+            failures + 1,
+            errors_count + 1,
+            next_review_at,
+        )
+
